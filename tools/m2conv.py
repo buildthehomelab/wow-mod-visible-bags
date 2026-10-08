@@ -152,7 +152,7 @@ BLEND_MS = 150  # retail blends 150 ms between variations; the loop gets that ta
 
 def compress_quat(q):
     """Inverse of the client's M2CompQuat decode (u16 / 32767.5 - 1)."""
-    return struct.pack("<4H", *(max(0, min(65535, int((c + 1.0) * 32767.5))) for c in q))
+    return struct.pack("<4H", *(max(0, min(65535, int(round((c + 1.0) * 32767.5)))) for c in q))
 
 
 def sway_track(total, degrees, swings, phase, axis, keys_per_swing=12):
@@ -180,6 +180,8 @@ def retail_rig(m, dz, sway):
     md = m.md
     seqs = m.arr("sequences", SEQUENCE)
     kept = [i for i, x in enumerate(seqs) if x[0] == 0 and x[2] > 0]  # Stand and its variations
+    if not kept:
+        raise ValueError("no Stand sequence with a duration")
     starts, total = [], 0
     for old in kept:
         starts.append(total)
@@ -221,8 +223,12 @@ def retail_rig(m, dz, sway):
         values.append(values[0])
         return (interp, [(len(times), struct.pack("<%dI" % len(times), *times), b"".join(values))], 0)
 
+    retail_bones = m.arr("bones", BONE)
+    unknown = set(sway) - set(range(len(retail_bones)))
+    if unknown:
+        raise ValueError("sway for missing bones %s" % sorted(unknown))
     bones = []
-    for i, b in enumerate(m.arr("bones", BONE)):
+    for i, b in enumerate(retail_bones):
         key, flags, parent, submesh, crc = b[:5]
         tracks = [track(b[5:11], 12, IDENTITY[12]), track(b[11:17], 8, IDENTITY[8]),
                   track(b[17:23], 12, SCALE_ONE)]
