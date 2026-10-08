@@ -51,13 +51,22 @@ PACKS = {
 # Packs that keep their retail bones and Stand animations (the chicken's three idle loops).
 ANIMATED = {"halfhill_backpack"}
 # Hand-made pendulum swings for the parts retail moves with physics:
-# bone: (degrees, swings per loop, phase, rotation axis). The loop is about 6 s.
+# bone: (degrees, swings per loop, phase, swing axis, droop degrees, droop axis). The loop is
+# about 6 s. Droop tilts a part down on its hook: retail rests the pan and basket sticking out
+# and lets physics gravity pull them down, so without a droop they float beside the pack.
 SWAY = {
     "halfhill_backpack": {
-        8: (7.0, 4, 0.00, (0.5, 1.0, 0.0)),    # frying pan
-        10: (5.0, 4, 0.35, (0.5, -1.0, 0.0)),  # basket
-        9: (12.0, 6, 0.15, (1.0, 0.3, 0.0)),   # tassel
+        8: (7.0, 4, 0.00, (0.5, 1.0, 0.0), -40.0, (1.0, 0.0, 0.0)),   # frying pan (+y side)
+        10: (5.0, 4, 0.35, (0.5, -1.0, 0.0), 40.0, (1.0, 0.0, 0.0)),  # egg basket (-y side)
+        9: (12.0, 6, 0.15, (1.0, 0.3, 0.0)),                          # tassel
     },
+}
+# One-piece packs: mesh pieces inside box move onto a new swinging bone hung from their top.
+PARTS = {
+    "dragonscale_backpack": [
+        # the glass lantern hanging low on the +y side
+        dict(box=(-0.36, -0.15, 0.14, 0.34, -0.51, -0.21), sway=(9.0, 5, 0.0, (1.0, 0.4, 0.0))),
+    ],
 }
 
 # Placement: spell id -> (attachment, (x, y, z), yaw). Probes 90186/90187 reuse the Tuskarr
@@ -192,7 +201,7 @@ def convert_pack(models, folder, stem, dz, work, force_texture=None):
     m2, skin, used = convert(open(os.path.join(d, "model.m2"), "rb").read(),
                              open(os.path.join(d, "model00.skin"), "rb").read(),
                              texture_for, stem, dz, animate=folder in ANIMATED and not force_texture,
-                             sway=SWAY.get(folder))
+                             sway=SWAY.get(folder), parts=None if force_texture else PARTS.get(folder))
     m2_path = os.path.join(work, stem + ".m2")
     skin_path = os.path.join(work, stem + "00.skin")
     open(m2_path, "wb").write(m2)

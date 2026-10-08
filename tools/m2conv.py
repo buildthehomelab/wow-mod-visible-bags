@@ -63,13 +63,15 @@ def bounds(points):
     return lo + hi, radius
 
 
-def convert(retail_m2, retail_skin, texture_for, name, dz=0.0, animate=False, sway=None):
+def convert(retail_m2, retail_skin, texture_for, name, dz=0.0, animate=False, sway=None, parts=None):
     """texture_for(retail_texture_index, retail_texture) -> new texture path or None.
 
     animate keeps the retail bones and the Stand (id 0) sequences with their keyframes, so a
     model with an idle loop (the Halfhill chicken) keeps moving; otherwise one static bone.
     sway = {bone: (degrees, swings per loop, phase 0..1, (axis x, y, z))} adds a pendulum swing
     to bones retail moved with physics (the 3.3.5 client has none).
+    parts = [dict(box=(x0, x1, y0, y1, z0, z1), sway=(...))] splits a one-bone model: each mesh
+    island inside the box moves onto a new bone pivoted at the top of the part, and swings.
 
     Returns (m2 bytes, skin bytes, [texture paths in M2 order]).
     """
@@ -125,6 +127,16 @@ def convert(retail_m2, retail_skin, texture_for, name, dz=0.0, animate=False, sw
         subs.append((sid, level, vstart, vcount, istart, icount, (cx, cy, cz + dz), (sx, sy, sz + dz), r))
     if not batches:
         raise ValueError("%s: no drawable batch left" % name)
+    if parts:
+        rig, vertex_bone = split_rig(points, indices, parts, box_of(points), dz)
+        out_verts = [rebind(raw, vertex_bone[i]) for i, raw in enumerate(out_verts)]
+        nb = len(rig["bones"])
+        m2 = write_model(name, out_verts, points, textures, materials, tex_flags, rig)
+        skin = build_skin(len(out_verts), indices, subs, batches,
+                          vertex_bones=b"".join(struct.pack("<4B", b, 0, 0, 0) for b in vertex_bone),
+                          sub_bones=[(nb, 0, 1, 0)] * len(subs))
+        return m2, skin, textures
+
     if not animate:
         m2 = write_model(name, out_verts, points, textures, materials, tex_flags)
         return m2, build_skin(len(out_verts), indices, subs, batches), textures
@@ -155,15 +167,32 @@ def compress_quat(q):
     return struct.pack("<4H", *(max(0, min(65535, int(round((c + 1.0) * 32767.5)))) for c in q))
 
 
-def sway_track(total, degrees, swings, phase, axis, keys_per_swing=12):
+def axis_angle(axis, degrees):
     ax = [a / math.sqrt(sum(c * c for c in axis)) for a in axis]
+    h = math.radians(degrees) / 2
+    return (ax[0] * math.sin(h), ax[1] * math.sin(h), ax[2] * math.sin(h), math.cos(h))
+
+
+def quat_mul(a, b):
+    ax, ay, az, aw = a
+    bx, by, bz, bw = b
+    return (aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw,
+            aw * bw - ax * bx - ay * by - az * bz)
+
+
+def sway_track(total, degrees, swings, phase, axis, droop=0.0, droop_axis=(1.0, 0.0, 0.0),
+               keys_per_swing=12):
+    """A pendulum swing (whole swings per loop, so it wraps cleanly) about a resting tilt:
+    droop degrees about droop_axis lets a part retail physics pulled down hang down here too."""
+    rest = axis_angle(droop_axis, droop)
     times, values = [], []
     n = swings * keys_per_swing
     for k in range(n):
         t = total * k // n
-        angle = math.radians(degrees) * math.sin(2 * math.pi * (k / n * swings + phase))
-        h = angle / 2
-        values.append(compress_quat((ax[0] * math.sin(h), ax[1] * math.sin(h), ax[2] * math.sin(h), math.cos(h))))
+        angle = degrees * math.sin(2 * math.pi * (k / n * swings + phase))
+        values.append(compress_quat(quat_mul(rest, axis_angle(axis, angle))))
         times.append(t)
     times.append(total - 1)  # close the loop on the first pose
     values.append(values[0])
@@ -242,6 +271,76 @@ def retail_rig(m, dz, sway):
                           pivot=(b[23], b[24], b[25] + dz)))
     return dict(sequences=sequences, bones=bones, bone_lookup=m.lookup("bone_lookup"),
                 global_loops=[loop])
+
+
+SPLIT_LOOP_MS = 6000
+
+
+def box_of(points):
+    return bounds(points)
+
+
+def rebind(raw, bone):
+    """Point a packed vertex (one full-weight bone) at another bone."""
+    return raw[:12] + bytes((255, 0, 0, 0, bone, 0, 0, 0)) + raw[20:]
+
+
+def islands(points, indices):
+    """Connected mesh pieces (UV seams welded), as lists of skin-local vertex indexes."""
+    parent = list(range(len(points)))
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    first = {}
+    for i, p in enumerate(points):
+        key = tuple(round(c, 4) for c in p)
+        if key in first:
+            parent[find(i)] = find(first[key])
+        else:
+            first[key] = i
+    for t in range(0, len(indices), 3):
+        a = find(indices[t])
+        for b in (indices[t + 1], indices[t + 2]):
+            b = find(b)
+            if a != b:
+                parent[b] = a
+    groups = {}
+    for i in range(len(points)):
+        groups.setdefault(find(i), []).append(i)
+    return list(groups.values())
+
+
+def split_rig(points, indices, parts, model_bounds, dz):
+    """Root bone plus one swinging bone per part, for a model retail ships as one piece."""
+    (box, radius) = model_bounds
+    vertex_bone = [0] * len(points)
+    pieces = islands(points, indices)
+    bones = [dict(flags=0, parent=-1, submesh=0, tracks=[(0, [])] * 3, pivot=(0.0, 0.0, 0.0))]
+    for part in parts:
+        x0, x1, y0, y1, z0, z1 = part["box"]
+        z0, z1 = z0 + dz, z1 + dz
+        chosen = [i for piece in pieces
+                  if all(x0 <= points[i][0] <= x1 and y0 <= points[i][1] <= y1 and z0 <= points[i][2] <= z1
+                         for i in piece)
+                  for i in piece]
+        if not chosen:
+            raise ValueError("part box %s holds no whole mesh piece" % (part["box"],))
+        bone = len(bones)
+        for i in chosen:
+            vertex_bone[i] = bone
+        xs, ys, zs = zip(*(points[i] for i in chosen))
+        pivot = (sum(xs) / len(xs), sum(ys) / len(ys), max(zs))  # hangs from its top
+        bones.append(dict(flags=0x200, parent=0, submesh=0,
+                          tracks=[(0, []), sway_track(SPLIT_LOOP_MS, *part["sway"]), (0, [])],
+                          pivot=pivot))
+    sequences = [dict(id=0, variation=0, duration=SPLIT_LOOP_MS, movespeed=0.0, frequency=0x7FFF,
+                      replay=(0, 0), box=box, radius=radius, var_next=-1, alias=0)]
+    return (dict(sequences=sequences, bones=bones, bone_lookup=list(range(len(bones))),
+                 global_loops=[SPLIT_LOOP_MS]), vertex_bone)
 
 
 def vertex(pos, normal, uv):
