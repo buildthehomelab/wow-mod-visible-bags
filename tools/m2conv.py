@@ -63,11 +63,13 @@ def bounds(points):
     return lo + hi, radius
 
 
-def convert(retail_m2, retail_skin, texture_for, name, dz=0.0, animate=False):
+def convert(retail_m2, retail_skin, texture_for, name, dz=0.0, animate=False, sway=None):
     """texture_for(retail_texture_index, retail_texture) -> new texture path or None.
 
     animate keeps the retail bones and the Stand (id 0) sequences with their keyframes, so a
     model with an idle loop (the Halfhill chicken) keeps moving; otherwise one static bone.
+    sway = {bone: (degrees, swings per loop, phase 0..1, (axis x, y, z))} adds a pendulum swing
+    to bones retail moved with physics (the 3.3.5 client has none).
 
     Returns (m2 bytes, skin bytes, [texture paths in M2 order]).
     """
@@ -127,7 +129,7 @@ def convert(retail_m2, retail_skin, texture_for, name, dz=0.0, animate=False):
         m2 = write_model(name, out_verts, points, textures, materials, tex_flags)
         return m2, build_skin(len(out_verts), indices, subs, batches), textures
 
-    rig = retail_rig(m, dz)
+    rig = retail_rig(m, dz, sway or {})
     m2 = write_model(name, out_verts, points, textures, materials, tex_flags, rig)
     skin = build_skin(len(out_verts), indices, subs, batches,
                       vertex_bones=b"".join(struct.pack("<4B", *x) for x in sk.bones()),
@@ -145,7 +147,30 @@ IDENTITY = {12: struct.pack("<3f", 0, 0, 0), 8: struct.pack("<4h", 32767, 32767,
 SCALE_ONE = struct.pack("<3f", 1, 1, 1)
 
 
-def retail_rig(m, dz):
+BLEND_MS = 150  # retail blends 150 ms between variations; the loop gets that tail to wrap smoothly
+
+
+def compress_quat(q):
+    """Inverse of the client's M2CompQuat decode (u16 / 32767.5 - 1)."""
+    return struct.pack("<4H", *(max(0, min(65535, int((c + 1.0) * 32767.5))) for c in q))
+
+
+def sway_track(total, degrees, swings, phase, axis, keys_per_swing=12):
+    ax = [a / math.sqrt(sum(c * c for c in axis)) for a in axis]
+    times, values = [], []
+    n = swings * keys_per_swing
+    for k in range(n):
+        t = total * k // n
+        angle = math.radians(degrees) * math.sin(2 * math.pi * (k / n * swings + phase))
+        h = angle / 2
+        values.append(compress_quat((ax[0] * math.sin(h), ax[1] * math.sin(h), ax[2] * math.sin(h), math.cos(h))))
+        times.append(t)
+    times.append(total - 1)  # close the loop on the first pose
+    values.append(values[0])
+    return (1, [(len(times), struct.pack("<%dI" % len(times), *times), b"".join(values))], 0)
+
+
+def retail_rig(m, dz, sway):
     """Bones and keyframes of a retail model, ready for write_model.
 
     The retail Stand variations are laid end to end on one global loop, so the bones move
@@ -154,14 +179,15 @@ def retail_rig(m, dz):
     """
     md = m.md
     seqs = m.arr("sequences", SEQUENCE)
-    kept = [i for i, x in enumerate(seqs) if x[0] == 0]  # Stand and its variations
+    kept = [i for i, x in enumerate(seqs) if x[0] == 0 and x[2] > 0]  # Stand and its variations
     starts, total = [], 0
     for old in kept:
         starts.append(total)
         total += seqs[old][2]
+    loop = total + BLEND_MS
     first = seqs[kept[0]]
     box = (first[11], first[12], first[13] + dz, first[14], first[15], first[16] + dz)
-    sequences = [dict(id=0, variation=0, duration=total, movespeed=0.0, frequency=0x7FFF,
+    sequences = [dict(id=0, variation=0, duration=loop, movespeed=0.0, frequency=0x7FFF,
                       replay=(0, 0), box=box, radius=first[17], var_next=-1, alias=0)]
 
     def track(fields, value_size, rest):
@@ -191,17 +217,25 @@ def retail_rig(m, dz):
                 values.append(v)
         if all(v == rest for v in values):
             return (0, [])
+        times.append(loop - 1)  # blend back into the first pose before the loop wraps
+        values.append(values[0])
         return (interp, [(len(times), struct.pack("<%dI" % len(times), *times), b"".join(values))], 0)
 
     bones = []
-    for b in m.arr("bones", BONE):
+    for i, b in enumerate(m.arr("bones", BONE)):
         key, flags, parent, submesh, crc = b[:5]
-        bones.append(dict(flags=flags & BONE_FLAGS_KEPT, parent=parent, submesh=submesh,
-                          tracks=[track(b[5:11], 12, IDENTITY[12]), track(b[11:17], 8, IDENTITY[8]),
-                                  track(b[17:23], 12, SCALE_ONE)],
+        tracks = [track(b[5:11], 12, IDENTITY[12]), track(b[11:17], 8, IDENTITY[8]),
+                  track(b[17:23], 12, SCALE_ONE)]
+        flags &= BONE_FLAGS_KEPT
+        if i in sway:
+            if tracks[1][1]:
+                raise ValueError("bone %d already rotates; won't add a sway" % i)
+            tracks[1] = sway_track(loop, *sway[i])
+            flags |= 0x200  # the client only animates bones flagged transformed (0x200) or 0x80
+        bones.append(dict(flags=flags, parent=parent, submesh=submesh, tracks=tracks,
                           pivot=(b[23], b[24], b[25] + dz)))
     return dict(sequences=sequences, bones=bones, bone_lookup=m.lookup("bone_lookup"),
-                global_loops=[total])
+                global_loops=[loop])
 
 
 def vertex(pos, normal, uv):

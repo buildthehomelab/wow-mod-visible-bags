@@ -50,6 +50,15 @@ PACKS = {
 }
 # Packs that keep their retail bones and Stand animations (the chicken's three idle loops).
 ANIMATED = {"halfhill_backpack"}
+# Hand-made pendulum swings for the parts retail moves with physics:
+# bone: (degrees, swings per loop, phase, rotation axis). The loop is about 6 s.
+SWAY = {
+    "halfhill_backpack": {
+        8: (7.0, 4, 0.00, (0.5, 1.0, 0.0)),    # frying pan
+        10: (5.0, 4, 0.35, (0.5, -1.0, 0.0)),  # basket
+        9: (12.0, 6, 0.15, (1.0, 0.3, 0.0)),   # tassel
+    },
+}
 
 # Placement: spell id -> (attachment, (x, y, z), yaw). Probes 90186/90187 reuse the Tuskarr
 # Backpack model to check the attachment's orientation in the 3.3.5 client.
@@ -182,7 +191,8 @@ def convert_pack(models, folder, stem, dz, work, force_texture=None):
 
     m2, skin, used = convert(open(os.path.join(d, "model.m2"), "rb").read(),
                              open(os.path.join(d, "model00.skin"), "rb").read(),
-                             texture_for, stem, dz, animate=folder in ANIMATED and not force_texture)
+                             texture_for, stem, dz, animate=folder in ANIMATED and not force_texture,
+                             sway=SWAY.get(folder))
     m2_path = os.path.join(work, stem + ".m2")
     skin_path = os.path.join(work, stem + "00.skin")
     open(m2_path, "wb").write(m2)
