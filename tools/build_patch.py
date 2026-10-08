@@ -48,6 +48,9 @@ PACKS = {
     90176: ("radiant_backpack", "VB_RadiantBackpack", "Radiant Traveler's Backpack", -0.09),
     90177: ("halfhill_backpack", "VB_HalfhillBackpack", "Halfhill Farmer's Backpack", 0.0),
 }
+# Packs that keep their retail bones and Stand animations (the chicken's three idle loops).
+ANIMATED = {"halfhill_backpack"}
+
 # Placement: spell id -> (attachment, (x, y, z), yaw). Probes 90186/90187 reuse the Tuskarr
 # Backpack model to check the attachment's orientation in the 3.3.5 client.
 PLACEMENT = {sid: (ATTACH_BACK, (0.0, 0.0, 0.0), 0.0) for sid in PACKS}
@@ -179,7 +182,7 @@ def convert_pack(models, folder, stem, dz, work, force_texture=None):
 
     m2, skin, used = convert(open(os.path.join(d, "model.m2"), "rb").read(),
                              open(os.path.join(d, "model00.skin"), "rb").read(),
-                             texture_for, stem, dz)
+                             texture_for, stem, dz, animate=folder in ANIMATED and not force_texture)
     m2_path = os.path.join(work, stem + ".m2")
     skin_path = os.path.join(work, stem + "00.skin")
     open(m2_path, "wb").write(m2)
