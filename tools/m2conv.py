@@ -62,7 +62,6 @@ def convert(retail_m2, retail_skin, texture_for, name, dz=0.0):
         points.append(pos)
         out_verts.append(struct.pack("<3f4B4B3f2f2f", *pos, 255, 0, 0, 0, 0, 0, 0, 0,
                                      v[11], v[12], v[13], v[14], v[15], v[16], v[17]))
-    box, radius = bounds(points)
 
     # Batches -> one diffuse texture + one material each.
     textures, materials, batches = [], [], []
@@ -82,6 +81,33 @@ def convert(retail_m2, retail_skin, texture_for, name, dz=0.0):
             materials.append(material)
         batches.append((sub, textures.index(path), materials.index(material), prio))
 
+    subs = []
+    for x in sk.submeshes():
+        sid, level, vstart, vcount, istart, icount = x[:6]
+        cx, cy, cz, sx, sy, sz, r = x[10:]
+        subs.append((sid, level, vstart, vcount, istart, icount, (cx, cy, cz + dz), (sx, sy, sz + dz), r))
+    m2 = write_model(name, out_verts, points, textures, materials)
+    return m2, build_skin(len(out_verts), sk.indices(), subs, batches), textures
+
+
+def vertex(pos, normal, uv):
+    return struct.pack("<3f4B4B3f2f2f", *pos, 255, 0, 0, 0, 0, 0, 0, 0, *normal, *uv, 0.0, 0.0)
+
+
+def quad(name, texture, size=0.3):
+    """A flat square facing -x (behind the attachment): the smallest model the client can draw."""
+    s = size
+    corners = [(0.0, -s, -s), (0.0, s, -s), (0.0, s, s), (0.0, -s, s)]
+    uvs = [(0, 1), (1, 1), (1, 0), (0, 0)]
+    verts = [vertex(c, (-1.0, 0.0, 0.0), uv) for c, uv in zip(corners, uvs)]
+    indices = [0, 1, 2, 0, 2, 3, 0, 2, 1, 0, 3, 2]  # both sides
+    subs = [(0, 0, 0, 4, 0, len(indices), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), s * 1.5)]
+    m2 = write_model(name, verts, corners, [texture], [(0, 0)])
+    return m2, build_skin(4, indices, subs, [(0, 0, 0, 0)])
+
+
+def write_model(name, out_verts, points, textures, materials):
+    box, radius = bounds(points)
     blob = Blob()
     h = {}
     nm = (name + "\0").encode()
@@ -138,13 +164,10 @@ def convert(retail_m2, retail_skin, texture_for, name, dz=0.0):
     assert len(hdr) == HEADER_SIZE, hex(len(hdr))
     blob.data[:HEADER_SIZE] = hdr
 
-    return bytes(blob.data), build_skin(sk, dz, batches), textures
+    return bytes(blob.data)
 
 
-def build_skin(sk, dz, batches):
-    n = len(sk.vertex_map())
-    indices = sk.indices()
-    subs = sk.submeshes()
+def build_skin(n, indices, subs, batches):
     out = bytearray(48)
     parts = []
 
@@ -159,11 +182,9 @@ def build_skin(sk, dz, batches):
     parts.append(add(struct.pack("<%dH" % len(indices), *indices), len(indices)))
     parts.append(add(b"\0\0\0\0" * n, n))
     sub_rows = b""
-    for s in subs:
-        sid, level, vstart, vcount, istart, icount = s[:6]
-        cx, cy, cz, sx, sy, sz, r = s[10:]
+    for sid, level, vstart, vcount, istart, icount, center, sort_center, r in subs:
         sub_rows += struct.pack("<HHHHHHHHHH3f3ff", sid, level, vstart, vcount, istart, icount,
-                                1, 0, 1, 0, cx, cy, cz + dz, sx, sy, sz + dz, r)
+                                1, 0, 1, 0, *center, *sort_center, r)
     parts.append(add(sub_rows, len(subs)))
     batch_rows = b""
     for sub, tex, mat, prio in batches:

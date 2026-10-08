@@ -23,7 +23,7 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from m2 import M2  # noqa: E402
-from m2conv import convert  # noqa: E402
+from m2conv import convert, quad  # noqa: E402
 
 TEMPLATE_SPELL = 71589      # Plaguethrower Backpack: hidden permanent dummy aura on self
 TEMPLATE_VISUAL = 15137     # its SpellVisual (StateKit = 13991)
@@ -53,6 +53,16 @@ PLACEMENT = {sid: (ATTACH_BACK, (0.0, 0.0, 0.0), 0.0) for sid in PACKS}
 PROBES = {
     90186: (90171, "Tuskarr Backpack (probe: turned 180)", (ATTACH_BACK, (0.0, 0.0, 0.0), 3.14159265)),
     90187: (90171, "Tuskarr Backpack (probe: chest anchor)", (ATTACH_CHEST, (-0.25, 0.0, 0.0), 0.0)),
+}
+
+# Diagnostics for a client freeze: each swaps one part for a stock one.
+STOCK_MODEL = "World\\Generic\\Ogre\\Passive Doodads\\OgreBackpacks\\OgreBackpack01.mdx"
+STOCK_TEXTURE = "Textures\\ShaneCube.blp"
+DIAG = {
+    90180: "Diag: stock ogre backpack model",
+    90181: "Diag: Tuskarr Backpack mesh, stock texture",
+    90182: "Diag: test square, Tuskarr texture",
+    90183: "Diag: test square, stock texture",
 }
 
 # New DBC ids: base + (spell - 90170).
@@ -143,12 +153,14 @@ def pack(out, files):
 
 # --- models ------------------------------------------------------------------------------------
 
-def convert_pack(models, folder, stem, dz, work):
+def convert_pack(models, folder, stem, dz, work, force_texture=None):
     d = os.path.join(models, folder)
     manifest = json.load(open(os.path.join(models, "manifest.json")))[folder]
     files = []
 
     def texture_for(index, tex):
+        if force_texture:
+            return force_texture
         tex_type = tex[0]
         src = os.path.join(d, "item.blp") if tex_type == 2 else os.path.join(d, "tex%d.blp" % index)
         if not os.path.exists(src):
@@ -199,15 +211,32 @@ def build(args):
         files += convert_pack(args.models, folder, stem, dz, work)
         stems[sid] = stem
 
-    entries = {sid: (stems[sid], PACKS[sid][2], PLACEMENT[sid]) for sid in PACKS}
+    def model_path(stem):
+        return "%s\\%s.mdx" % (MODEL_DIR, stem)
+
+    entries = {sid: (model_path(stems[sid]), PACKS[sid][2], PLACEMENT[sid]) for sid in PACKS}
     for sid, (model_of, name, placement) in PROBES.items():
-        entries[sid] = (stems[model_of], name, placement)
+        entries[sid] = (model_path(stems[model_of]), name, placement)
+
+    if args.diag:
+        back = (ATTACH_BACK, (0.0, 0.0, 0.0), 0.0)
+        entries[90180] = (STOCK_MODEL, DIAG[90180], back)
+        files += convert_pack(args.models, "tuskarr_backpack", "VB_DiagMeshStockTex", -0.17, work, STOCK_TEXTURE)
+        entries[90181] = (model_path("VB_DiagMeshStockTex"), DIAG[90181], back)
+        tusk_tex = "%s\\VB_TuskarrBackpack_0.blp" % MODEL_DIR
+        for sid, stem, tex in ((90182, "VB_DiagSquare", tusk_tex), (90183, "VB_DiagSquareStockTex", STOCK_TEXTURE)):
+            m2, skin = quad(stem, tex)
+            for data, suffix in ((m2, ".m2"), (skin, "00.skin")):
+                path = os.path.join(work, stem + suffix)
+                open(path, "wb").write(data)
+                files.append((path, "%s\\%s%s" % (MODEL_DIR, stem, suffix)))
+            entries[sid] = (model_path(stem), DIAG[sid], back)
 
     new_spell_rows = []
-    for sid, (stem, name, (attachment, (x, y, z), yaw)) in sorted(entries.items()):
+    for sid, (model, name, (attachment, (x, y, z), yaw)) in sorted(entries.items()):
         i = sid - 90170
         effect = [EFFECT_BASE + i, add_string(effect_str, "Visible Bag: " + name),
-                  add_string(effect_str, "%s\\%s.mdx" % (MODEL_DIR, stem)),
+                  add_string(effect_str, model),
                   f32(0.0), f32(1.0), f32(0.01), f32(100.0)]
         upsert(effects, effect)
 
@@ -286,6 +315,7 @@ def main():
     ap.add_argument("--models", required=True)
     ap.add_argument("--out")
     ap.add_argument("--sql")
+    ap.add_argument("--diag", action="store_true", help="add the freeze diagnostics 90180-90183")
     build(ap.parse_args())
 
 
