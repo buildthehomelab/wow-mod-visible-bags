@@ -14,6 +14,7 @@ SpellVisual state kit attaches the converted model to the character's Back attac
 """
 import argparse
 import ctypes
+import hashlib
 import json
 import os
 import shutil
@@ -124,6 +125,9 @@ def stormlib():
     lib.SFileExtractFile.argtypes = [h, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
     lib.SFileAddFileEx.argtypes = [h, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint, ctypes.c_uint, ctypes.c_uint]
     lib.SFileCloseArchive.argtypes = [h]
+    for fn in (lib.SFileOpenArchive, lib.SFileCreateArchive, lib.SFileExtractFile,
+               lib.SFileAddFileEx, lib.SFileCloseArchive):
+        fn.restype = ctypes.c_bool
     return lib, h
 
 
@@ -148,8 +152,12 @@ def pack(out, files):
         sys.exit("can't create " + out)
     for src, name in files:
         if not lib.SFileAddFileEx(h, src.encode(), name.encode(), 0x80000200, 0x02, 0x02):
+            lib.SFileCloseArchive(h)
+            os.remove(out)
             sys.exit("can't add " + name)
-    lib.SFileCloseArchive(h)
+    if not lib.SFileCloseArchive(h):
+        os.remove(out)
+        sys.exit("can't finish " + out)
 
 # --- models ------------------------------------------------------------------------------------
 
@@ -164,8 +172,7 @@ def convert_pack(models, folder, stem, dz, work, force_texture=None):
         tex_type = tex[0]
         src = os.path.join(d, "item.blp") if tex_type == 2 else os.path.join(d, "tex%d.blp" % index)
         if not os.path.exists(src):
-            print("  %s: texture %d (type %d) has no file, batch dropped" % (folder, index, tex_type))
-            return None
+            sys.exit("%s: texture %d (type %d) has no file %s" % (folder, index, tex_type, src))
         name = "%s\\%s_%d.blp" % (MODEL_DIR, stem, index)
         files.append((src, name))
         return name
@@ -189,6 +196,18 @@ def convert_pack(models, folder, stem, dz, work, force_texture=None):
 
 def build(args):
     work = tempfile.mkdtemp(prefix="visible-bags-")
+    try:
+        _build(args, work)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def _build(args, work):
+    # patch-V carries a whole Spell.dbc, so it is only valid on top of this exact patch-P.
+    base_sha = hashlib.sha256(open(args.patch_p, "rb").read()).hexdigest()
+    print("patch-P base", base_sha[:8])
+    if args.expect_patch_p and not base_sha.startswith(args.expect_patch_p):
+        sys.exit("patch-P is %s, expected %s" % (base_sha[:8], args.expect_patch_p))
     spell_src = os.path.join(work, "Spell.src.dbc")
     extract(args.patch_p, "DBFilesClient\\Spell.dbc", spell_src)
 
@@ -280,12 +299,13 @@ def build(args):
             out_dbc.append((p, "DBFilesClient\\" + fname))
         pack(args.out, out_dbc + files)
         print("wrote", args.out, "(%d files)" % len(out_dbc + files))
-    shutil.rmtree(work)
 
 # --- SQL ---------------------------------------------------------------------------------------
 
 STRING_FIELDS = set(range(136, 152)) | set(range(153, 169)) | set(range(170, 186)) | set(range(187, 203))
 FLOAT_FIELDS = {47, 77, 78, 79, 101, 102, 103, 119, 120, 121, 216, 217, 218, 229, 230, 231}
+# Plain `int` columns of AC's spell_dbc; every other integer column is `int unsigned`/`bigint unsigned`.
+SIGNED_FIELDS = {0, 13, 15, 41, *range(52, 71), 74, 75, 76, 80, 81, 82, *range(110, 116), 224, 228}
 
 
 def write_sql(path, rows):
@@ -294,7 +314,9 @@ def write_sql(path, rows):
             return "''"
         if i in FLOAT_FIELDS:
             return repr(round(struct.unpack("<f", struct.pack("<I", v))[0], 6))
-        return str(struct.unpack("<i", struct.pack("<I", v))[0])
+        if i in SIGNED_FIELDS:
+            return str(struct.unpack("<i", struct.pack("<I", v))[0])
+        return str(v)
 
     lines = []
     for row, name in rows:
@@ -315,6 +337,7 @@ def main():
     ap.add_argument("--models", required=True)
     ap.add_argument("--out")
     ap.add_argument("--sql")
+    ap.add_argument("--expect-patch-p", help="refuse to build unless patch-P's sha256 starts with this")
     ap.add_argument("--diag", action="store_true", help="add the freeze diagnostics 90180-90183")
     build(ap.parse_args())
 

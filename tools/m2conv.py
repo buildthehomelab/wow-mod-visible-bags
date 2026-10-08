@@ -83,7 +83,7 @@ def convert(retail_m2, retail_skin, texture_for, name, dz=0.0):
                                      v[11], v[12], v[13], v[14], v[15], v[16], v[17]))
 
     # Batches -> one diffuse texture + one material each.
-    textures, materials, batches = [], [], []
+    textures, tex_flags, materials, batches = [], [], [], []
     for b in sk.batches():
         flags, prio, shader, sub, geoset, color, mat, layer, count, combo, *_ = b
         if layer != 0 or retail_materials[mat][1] >= 2:
@@ -94,19 +94,27 @@ def convert(retail_m2, retail_skin, texture_for, name, dz=0.0):
             continue
         if path not in textures:
             textures.append(path)
+            tex_flags.append(retail_textures[ti][1] & 0x3)  # wrap X/Y as retail (Climber's Pack clamps)
         mflags, blend = retail_materials[mat]
         material = (mflags & 0x1F, blend if blend <= 6 else 1)
         if material not in materials:
             materials.append(material)
         batches.append((sub, textures.index(path), materials.index(material), prio))
 
+    indices = sk.indices()
+    if len(out_verts) > 0xFFFF or len(indices) > 0xFFFF:
+        raise ValueError("%s: too big for 16-bit skin indexes" % name)
     subs = []
     for x in sk.submeshes():
         sid, level, vstart, vcount, istart, icount = x[:6]
+        if level:  # 3.3.5 reads skinSectionId + Level as one uint32 and has no index-start overflow
+            raise ValueError("%s: submesh Level %d not supported" % (name, level))
         cx, cy, cz, sx, sy, sz, r = x[10:]
         subs.append((sid, level, vstart, vcount, istart, icount, (cx, cy, cz + dz), (sx, sy, sz + dz), r))
-    m2 = write_model(name, out_verts, points, textures, materials)
-    return m2, build_skin(len(out_verts), sk.indices(), subs, batches), textures
+    if not batches:
+        raise ValueError("%s: no drawable batch left" % name)
+    m2 = write_model(name, out_verts, points, textures, materials, tex_flags)
+    return m2, build_skin(len(out_verts), indices, subs, batches), textures
 
 
 def vertex(pos, normal, uv):
@@ -125,7 +133,7 @@ def quad(name, texture, size=0.3):
     return m2, build_skin(4, indices, subs, [(0, 0, 0, 0)])
 
 
-def write_model(name, out_verts, points, textures, materials):
+def write_model(name, out_verts, points, textures, materials, tex_flags=None):
     box, radius = bounds(points)
     blob = Blob()
     h = {}
@@ -146,7 +154,8 @@ def write_model(name, out_verts, points, textures, materials):
     for path in textures:
         s = (path + "\0").encode()
         tex_names.append(blob.add(s, len(s)))
-    tex_rows = b"".join(struct.pack("<IIII", 0, 3, *n) for n in tex_names)
+    tex_flags = tex_flags or [3] * len(textures)
+    tex_rows = b"".join(struct.pack("<IIII", 0, f, *n) for f, n in zip(tex_flags, tex_names))
     h["textures"] = blob.add(tex_rows, len(textures))
 
     # One static texture weight (fully opaque).
