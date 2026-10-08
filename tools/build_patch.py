@@ -57,7 +57,7 @@ ANIMATED = {"halfhill_backpack"}
 SWAY = {
     "halfhill_backpack": {
         8: (7.0, 4, 0.00, (0.5, 1.0, 0.0), -40.0, (1.0, 0.0, 0.0)),   # frying pan (+y side)
-        10: (5.0, 4, 0.35, (0.5, -1.0, 0.0), 40.0, (1.0, 0.0, 0.0)),  # egg basket (-y side)
+        10: (5.0, 4, 0.35, (0.5, -1.0, 0.0), 25.0, (1.0, 0.0, 0.0)),  # egg basket (-y side); 40 sank it into the pack
         9: (12.0, 6, 0.15, (1.0, 0.3, 0.0)),                          # tassel
     },
 }
@@ -65,7 +65,9 @@ SWAY = {
 PARTS = {
     "dragonscale_backpack": [
         # the glass lantern hanging low on the +y side
-        dict(box=(-0.36, -0.15, 0.14, 0.34, -0.51, -0.21), sway=(9.0, 5, 0.0, (1.0, 0.4, 0.0))),
+        # small swing + 6 degree outward tilt: retail already rests it 4 cm into the pack side
+        dict(box=(-0.36, -0.15, 0.14, 0.34, -0.51, -0.21),
+             sway=(6.0, 5, 0.0, (1.0, 0.4, 0.0), 6.0, (1.0, 0.0, 0.0))),
     ],
 }
 
