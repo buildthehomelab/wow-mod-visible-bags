@@ -28,6 +28,25 @@ class Blob:
         return (count, off)
 
 
+SEQUENCE_HASH_SIZE = 8
+
+
+def sequence_hash(anim_ids):
+    """3.3.5's sequenceIdxHashById: an open-addressed hash (slot = id % size, quadratic probing)
+    of sequence indexes, 0xFFFF = empty. The client probes until it finds the id or an empty
+    slot, so the table must keep empty slots: a full one hangs it on any missing animation
+    (spell kits ask attached models for more than Stand)."""
+    table = [0xFFFF] * SEQUENCE_HASH_SIZE
+    assert len(anim_ids) < SEQUENCE_HASH_SIZE
+    for seq_index, anim_id in enumerate(anim_ids):
+        slot, step = anim_id % SEQUENCE_HASH_SIZE, 1
+        while table[slot] != 0xFFFF:
+            slot = (slot + step * step) % SEQUENCE_HASH_SIZE
+            step += 1
+        table[slot] = seq_index
+    return struct.pack("<%dH" % SEQUENCE_HASH_SIZE, *table)
+
+
 def empty_track():
     return struct.pack("<HhIIII", 0, -1, 0, 0, 0, 0)
 
@@ -116,7 +135,7 @@ def write_model(name, out_verts, points, textures, materials):
     seq = struct.pack("<HHIfIhHIII6ffhH", 0, 0, 3333, 0.0, SEQ_FLAG_IN_M2, 0x7FFF, 0, 0, 0, 150,
                       *box, radius, -1, 0)
     h["sequences"] = blob.add(seq, 1)
-    h["sequence_lookup"] = blob.add(struct.pack("<h", 0), 1)
+    h["sequence_lookup"] = blob.add(sequence_hash([0]), SEQUENCE_HASH_SIZE)
     bone = struct.pack("<iIhHI", -1, 0, -1, 0, 0) + empty_track() * 3 + struct.pack("<3f", 0, 0, 0)
     h["bones"] = blob.add(bone, 1)
     h["key_bone_lookup"] = (0, 0)
