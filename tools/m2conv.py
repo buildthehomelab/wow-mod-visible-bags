@@ -138,49 +138,70 @@ def convert(retail_m2, retail_skin, texture_for, name, dz=0.0, animate=False):
 TRACK = "<HhIIII"  # interpolation, global sequence, timestamps M2Array, values M2Array
 BONE = "<iIhHI" + TRACK[1:] * 3 + "3f"
 SEQUENCE = "<HHIfIhHIIHH6ffhH"  # retail (Legion+) layout: blendTimeIn/Out as two uint16
-BONE_FLAGS_KEPT = 0x3F8  # billboard/transformed bits; retail 0x400 (physics) has no 3.3.5 meaning
+BONE_FLAGS_KEPT = 0x3FF  # inherit/billboard/transformed bits; retail 0x400 (physics) has no 3.3.5 meaning
+
+
+IDENTITY = {12: struct.pack("<3f", 0, 0, 0), 8: struct.pack("<4h", 32767, 32767, 32767, -1)}
+SCALE_ONE = struct.pack("<3f", 1, 1, 1)
 
 
 def retail_rig(m, dz):
-    """Bones, Stand sequences and keyframes of a retail model, ready for write_model."""
+    """Bones and keyframes of a retail model, ready for write_model.
+
+    The retail Stand variations are laid end to end on one global loop, so the bones move
+    whatever animation the client asks the attached model for (spell kits don't just play
+    Stand, and global loops tick regardless). The model keeps a single static Stand sequence.
+    """
     md = m.md
     seqs = m.arr("sequences", SEQUENCE)
     kept = [i for i, x in enumerate(seqs) if x[0] == 0]  # Stand and its variations
-    new_index = {old: new for new, old in enumerate(kept)}
-    sequences = []
+    starts, total = [], 0
     for old in kept:
-        x = seqs[old]
-        var_next = new_index.get(x[-2], -1) if x[-2] >= 0 else -1
-        box = (x[11], x[12], x[13] + dz, x[14], x[15], x[16] + dz)
-        sequences.append(dict(id=x[0], variation=x[1], duration=x[2], movespeed=x[3],
-                              frequency=x[5], replay=(x[7], x[8]), box=box, radius=x[17],
-                              var_next=var_next, alias=new_index[old]))
+        starts.append(total)
+        total += seqs[old][2]
+    first = seqs[kept[0]]
+    box = (first[11], first[12], first[13] + dz, first[14], first[15], first[16] + dz)
+    sequences = [dict(id=0, variation=0, duration=total, movespeed=0.0, frequency=0x7FFF,
+                      replay=(0, 0), box=box, radius=first[17], var_next=-1, alias=0)]
 
-    def track(fields, value_size):
+    def track(fields, value_size, rest):
         interp, gseq, tsn, tso, vn, vo = fields
         if gseq != -1:
-            return (0, [])  # global-sequence tracks would need the global loops too; keep rest pose
-        per_seq = []
-        width = value_size * (3 if interp >= 2 else 1)  # hermite/bezier store value + 2 tangents
-        for old in kept:
+            return (0, [])  # already on a retail global loop we don't carry over; keep rest pose
+        if interp not in (0, 1):
+            raise ValueError("interpolation %d not supported" % interp)
+        times, values = [], []
+        for old, start in zip(kept, starts):
+            dur = seqs[old][2]
             n, off = struct.unpack_from("<II", md, tso + 8 * old) if old < tsn else (0, 0)
-            times = md[off:off + 4 * n] if n else b""
             vn2, voff = struct.unpack_from("<II", md, vo + 8 * old) if old < vn else (0, 0)
-            values = md[voff:voff + width * vn2] if vn2 else b""
             if vn2 != n:
                 raise ValueError("track with %d times but %d values" % (n, vn2))
-            per_seq.append((n, times, values))
-        if not any(n for n, _, _ in per_seq):
+            keys = [(struct.unpack_from("<I", md, off + 4 * i)[0],
+                     md[voff + value_size * i:voff + value_size * (i + 1)]) for i in range(n)]
+            if not keys:
+                keys = [(0, rest)]
+            # Pin both ends of this variation's window so neighbours don't blend into it.
+            if keys[0][0] > 0:
+                keys.insert(0, (0, keys[0][1]))
+            if keys[-1][0] < dur - 1:
+                keys.append((dur - 1, keys[-1][1]))
+            for t, v in keys:
+                times.append(start + min(t, dur - 1))
+                values.append(v)
+        if all(v == rest for v in values):
             return (0, [])
-        return (interp, per_seq)
+        return (interp, [(len(times), struct.pack("<%dI" % len(times), *times), b"".join(values))], 0)
 
     bones = []
     for b in m.arr("bones", BONE):
         key, flags, parent, submesh, crc = b[:5]
         bones.append(dict(flags=flags & BONE_FLAGS_KEPT, parent=parent, submesh=submesh,
-                          tracks=[track(b[5:11], 12), track(b[11:17], 8), track(b[17:23], 12)],
+                          tracks=[track(b[5:11], 12, IDENTITY[12]), track(b[11:17], 8, IDENTITY[8]),
+                                  track(b[17:23], 12, SCALE_ONE)],
                           pivot=(b[23], b[24], b[25] + dz)))
-    return dict(sequences=sequences, bones=bones, bone_lookup=m.lookup("bone_lookup"))
+    return dict(sequences=sequences, bones=bones, bone_lookup=m.lookup("bone_lookup"),
+                global_loops=[total])
 
 
 def vertex(pos, normal, uv):
@@ -219,14 +240,14 @@ def write_model(name, out_verts, points, textures, materials, tex_flags=None, ri
     h["sequences"] = blob.add(seq_rows, len(rig["sequences"]))
     h["sequence_lookup"] = blob.add(sequence_hash([x["id"] for x in rig["sequences"]]), SEQUENCE_HASH_SIZE)
 
-    def write_track(interp, per_seq):
+    def write_track(interp, per_seq, global_loop=-1):
         if not per_seq:
             return empty_track()
         times = [blob.add(t, n) for n, t, _ in per_seq]
         values = [blob.add(v, n) for n, _, v in per_seq]
         ts = blob.add(b"".join(struct.pack("<II", *x) for x in times), len(per_seq))
         vs = blob.add(b"".join(struct.pack("<II", *x) for x in values), len(per_seq))
-        return struct.pack(TRACK, interp, -1, *ts, *vs)
+        return struct.pack(TRACK, interp, global_loop, *ts, *vs)
 
     bone_rows = b""
     for bone in rig["bones"]:
@@ -234,6 +255,8 @@ def write_model(name, out_verts, points, textures, materials, tex_flags=None, ri
         bone_rows += struct.pack("<iIhHI", -1, bone["flags"], bone["parent"], bone["submesh"], 0) \
             + tracks + struct.pack("<3f", *bone["pivot"])
     h["bones"] = blob.add(bone_rows, len(rig["bones"]))
+    loops = rig.get("global_loops", [])
+    h["global_loops"] = blob.add(struct.pack("<%dI" % len(loops), *loops), len(loops))
     h["key_bone_lookup"] = (0, 0)
     h["vertices"] = blob.add(b"".join(out_verts), len(out_verts))
 
