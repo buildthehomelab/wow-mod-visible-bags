@@ -89,6 +89,20 @@ DIAG = {
     90183: "Diag: test square, stock texture",
 }
 
+# The introduction letter's item: unlocks the Halfhill Farmer's Backpack on use. It reuses
+# "NPC Equip 27621", an unobtainable placeholder (the client keys bag icons by entry, and a new
+# entry far above Item.dbc's max would bloat the client's lookup table). Its new icon needs an
+# ItemDisplayInfo row. 90178 is the use spell, there for the "Use:" tooltip line.
+INTRO_ITEM = 27621
+INTRO_DISPLAY = 68743          # stock max is 68742
+INTRO_DISPLAY_TEMPLATE = 9632  # the item's stock display (no model, misc item)
+INTRO_ICON = "INV_Cape_Special_ChickenBackpack_C_01"
+INTRO_SPELL = 90178
+INTRO_SPELL_NAME = "Backpack Appearance"
+INTRO_SPELL_TEXT = "Adds the Halfhill Farmer's Backpack to your backpack collection and puts it on."
+SPELL_EFFECT_DUMMY = 3
+F_EFFECT, F_EFFECT_AURA, F_DESCRIPTION_FLAGS, F_ATTRIBUTES = 71, 95, 186, 4
+
 # New DBC ids: base + (spell - 90170).
 VISUAL_BASE, KIT_BASE, EFFECT_BASE, ATTACH_BASE = 16800, 15600, 7200, 4800
 
@@ -234,6 +248,8 @@ def _build(args, work):
         sys.exit("patch-P is %s, expected %s" % (base_sha[:8], args.expect_patch_p))
     spell_src = os.path.join(work, "Spell.src.dbc")
     extract(args.patch_p, "DBFilesClient\\Spell.dbc", spell_src)
+    item_src = os.path.join(work, "Item.src.dbc")
+    extract(args.patch_p, "DBFilesClient\\Item.dbc", item_src)
 
     spells, spell_str, sf = read_dbc(spell_src)
     assert sf == SPELL_FIELDS
@@ -258,10 +274,9 @@ def _build(args, work):
         return "%s\\%s.mdx" % (MODEL_DIR, stem)
 
     entries = {sid: (model_path(stems[sid]), PACKS[sid][2], PLACEMENT[sid]) for sid in PACKS}
-    for sid, (model_of, name, placement) in PROBES.items():
-        entries[sid] = (model_path(stems[model_of]), name, placement)
-
     if args.diag:
+        for sid, (model_of, name, placement) in PROBES.items():
+            entries[sid] = (model_path(stems[model_of]), name, placement)
         back = (ATTACH_BACK, (0.0, 0.0, 0.0), 0.0)
         entries[90180] = (STOCK_MODEL, DIAG[90180], back)
         files += convert_pack(args.models, "tuskarr_backpack", "VB_DiagMeshStockTex", -0.17, work, STOCK_TEXTURE)
@@ -305,7 +320,42 @@ def _build(args, work):
             spell[F_DESCRIPTION + loc] = 0
         spell[F_NAME] = add_string(spell_str, "Visible Bag: " + name)
         upsert(spells, spell)
-        new_spell_rows.append((spell, "Visible Bag: " + name))
+        new_spell_rows.append((spell, "Visible Bag: " + name, ""))
+
+    # The intro item's use spell: a plain self-cast dummy (the server's item script does the work).
+    use = template(spells, TEMPLATE_SPELL)
+    use[0] = INTRO_SPELL
+    use[F_ATTRIBUTES] = 0
+    use[F_EFFECT] = SPELL_EFFECT_DUMMY
+    use[F_EFFECT_AURA] = 0
+    use[F_DURATION] = 0
+    use[F_VISUAL] = use[F_VISUAL + 1] = 0
+    for loc in range(16):
+        use[F_NAME + loc] = 0
+        use[F_DESCRIPTION + loc] = 0
+    use[F_NAME] = add_string(spell_str, INTRO_SPELL_NAME)
+    use[F_DESCRIPTION] = add_string(spell_str, INTRO_SPELL_TEXT)
+    use[F_DESCRIPTION_FLAGS] = use[F_NAME_FLAGS]
+    upsert(spells, use)
+    new_spell_rows.append((use, INTRO_SPELL_NAME, INTRO_SPELL_TEXT))
+
+    items, item_str, itf = read_dbc(item_src)
+    item_row = template(items, INTRO_ITEM)
+    item_row[1], item_row[2] = 15, 0  # Miscellaneous / Junk, like the placeholder
+    item_row[5] = INTRO_DISPLAY
+    upsert(items, item_row)
+
+    displays, display_str, df = read_dbc(os.path.join(args.stock_dbc, "ItemDisplayInfo.dbc"))
+    if any(r[0] == INTRO_DISPLAY for r in displays):
+        sys.exit("ItemDisplayInfo %d already exists" % INTRO_DISPLAY)
+    display = template(displays, INTRO_DISPLAY_TEMPLATE)
+    display[0] = INTRO_DISPLAY
+    display[5] = add_string(display_str, INTRO_ICON)
+    upsert(displays, display)
+    icon = os.path.join(args.models, "icons", "chicken.blp")
+    if not os.path.exists(icon):
+        sys.exit("missing " + icon + " (fetch_retail.py)")
+    files.append((icon, "Interface\\Icons\\%s.blp" % INTRO_ICON))
 
     if args.sql:
         write_sql(args.sql, new_spell_rows)
@@ -317,10 +367,18 @@ def _build(args, work):
                                              ("SpellVisual.dbc", visuals, visual_str, vf),
                                              ("SpellVisualKit.dbc", kits, kit_str, kf),
                                              ("SpellVisualEffectName.dbc", effects, effect_str, ef),
-                                             ("SpellVisualKitModelAttach.dbc", attaches, attach_str, af)):
+                                             ("SpellVisualKitModelAttach.dbc", attaches, attach_str, af),
+                                             ("Item.dbc", items, item_str, itf),
+                                             ("ItemDisplayInfo.dbc", displays, display_str, df)):
             p = os.path.join(work, fname)
             write_dbc(p, rows, strings, fields)
             out_dbc.append((p, "DBFilesClient\\" + fname))
+        if args.full:
+            # A whole replacement patch-P: its other files ride along unchanged.
+            for name in ("SkillLineAbility.dbc", "GlyphProperties.dbc"):
+                p = os.path.join(work, name)
+                extract(args.patch_p, "DBFilesClient\\" + name, p)
+                out_dbc.append((p, "DBFilesClient\\" + name))
         pack(args.out, out_dbc + files)
         print("wrote", args.out, "(%d files)" % len(out_dbc + files))
 
@@ -343,9 +401,11 @@ def write_sql(path, rows):
         return str(v)
 
     lines = []
-    for row, name in rows:
+    for row, name, description in rows:
         vals = [value(i, v) for i, v in enumerate(row)]
         vals[F_NAME] = "'" + name.replace("'", "''") + "'"
+        if description:
+            vals[F_DESCRIPTION] = "'" + description.replace("'", "''") + "'"
         lines.append("(" + ", ".join(vals) + ")")
     ids = ", ".join(str(r[0][0]) for r in rows)
     with open(path, "w") as f:
@@ -362,6 +422,8 @@ def main():
     ap.add_argument("--out")
     ap.add_argument("--sql")
     ap.add_argument("--expect-patch-p", help="refuse to build unless patch-P's sha256 starts with this")
+    ap.add_argument("--full", action="store_true",
+                    help="also copy patch-P's other files, so --out can replace patch-P itself")
     ap.add_argument("--diag", action="store_true", help="add the freeze diagnostics 90180-90183")
     build(ap.parse_args())
 
