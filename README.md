@@ -54,10 +54,10 @@ only the client patch toolchain.
 - Python 3.10+ (standard library only).
 - [StormLib](https://github.com/ladislav-zezula/StormLib) as a shared library. The default is
   `/usr/local/lib/libstorm.dylib`; point `STORMLIB` at yours.
-- The realm's current `patch-P.MPQ` (its Spell.dbc and Item.dbc are the base), and the stock
-  `SpellVisual.dbc`, `SpellVisualKit.dbc`, `SpellVisualEffectName.dbc`,
-  `SpellVisualKitModelAttach.dbc` and `ItemDisplayInfo.dbc` (from the server's
-  `env/dist/data/dbc`).
+- The client patch that already ships your Spell.dbc and Item.dbc (its copies are the base;
+  the examples call it `patch-P.MPQ`), and the stock `SpellVisual.dbc`, `SpellVisualKit.dbc`,
+  `SpellVisualEffectName.dbc`, `SpellVisualKitModelAttach.dbc` and `ItemDisplayInfo.dbc`
+  (from your server's `env/dist/data/dbc`).
 
 ## Usage
 
@@ -66,6 +66,8 @@ python3 tools/fetch_retail.py retail-models
 python3 tools/build_patch.py --patch-p patch-P.MPQ --expect-patch-p <sha prefix> \
     --stock-dbc dbc --models retail-models --full --out patch-P.MPQ --sql spell_dbc.sql
 ```
+
+The patch letters are examples; use the names your client loads.
 
 - `--full` copies patch-P's other files, so the output replaces patch-P itself.
 - Without `--full` you get a test patch. Save it as a later letter (for example `patch-V.MPQ`) on your own client only. It carries its own copy of Spell.dbc, so it hides any newer patch-P until you remove it.
