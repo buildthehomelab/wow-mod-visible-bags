@@ -4,7 +4,8 @@
     python3 build_patch.py --patch-p patch-P.MPQ --stock-dbc DIR --models DIR --out patch-V.MPQ
     python3 build_patch.py ... --sql spell_dbc.sql
 
---patch-p    the live patch-P.MPQ; its Spell.dbc is the base, so the new patch can load after it
+--patch-p    the patch your clients already load that ships Spell.dbc (patch-P in these
+             examples); its Spell.dbc is the base, so the new patch can load after it
 --stock-dbc  folder with the stock SpellVisual.dbc, SpellVisualKit.dbc, SpellVisualEffectName.dbc
              and SpellVisualKitModelAttach.dbc (patch-P doesn't carry these)
 --models     output of fetch_retail.py
@@ -184,7 +185,7 @@ def pack(out, files):
     if os.path.exists(out):
         os.remove(out)
     h = H()
-    # MPQ v1 with a listfile and attributes; each file zlib-compressed, like the realm's patches.
+    # MPQ v1 with a listfile and attributes; each file zlib-compressed, like the client's own patches.
     if not lib.SFileCreateArchive(out.encode(), 0x00300000, max(16, len(files) * 2), ctypes.byref(h)):
         sys.exit("can't create " + out)
     for src, name in files:
